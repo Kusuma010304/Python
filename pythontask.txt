@@ -1,0 +1,216 @@
+import sqlite3
+import datetime
+import hashlib
+
+class UserManager:
+    def __init__(self):
+        self.conn = sqlite3.connect("finance.db")
+        self.cursor = self.conn.cursor()
+        self.create_user_table()
+
+    def create_user_table(self):
+        self.cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password TEXT NOT NULL
+        )''')
+        self.conn.commit()
+
+    def register_user(self, username, password):
+        try:
+            hashed_password = hashlib.sha256(password.encode()).hexdigest()
+            self.cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_password))
+            self.conn.commit()
+            print("Registration successful. Please login to continue.\n")
+        except sqlite3.IntegrityError:
+            print("Username already exists. Please try again.\n")
+
+    def authenticate_user(self, username, password):
+        hashed_password = hashlib.sha256(password.encode()).hexdigest()
+        self.cursor.execute("SELECT * FROM users WHERE username = ? AND password = ?", (username, hashed_password))
+        if self.cursor.fetchone():
+            print("Login successful!\n")
+            return True
+        else:
+            print("Invalid username or password.\n")
+            return False
+
+# Personal Finance Manager Class
+class PersonalFinanceManager:
+    def __init__(self, username):
+        self.conn = sqlite3.connect("finance.db")
+        self.cursor = self.conn.cursor()
+        self.username = username
+        self.create_transactions_table()
+        self.create_budget_table()
+
+    def create_transactions_table(self):
+        self.cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            type TEXT NOT NULL,
+            category TEXT NOT NULL,
+            amount REAL NOT NULL,
+            description TEXT NOT NULL,
+            date TEXT NOT NULL,
+            FOREIGN KEY(username) REFERENCES users(username)
+        )''')
+        self.conn.commit()
+
+    def create_budget_table(self):
+        self.cursor.execute('''CREATE TABLE IF NOT EXISTS budgets (
+            username TEXT NOT NULL,
+            category TEXT NOT NULL,
+            budget REAL NOT NULL,
+            PRIMARY KEY (username, category),
+            FOREIGN KEY(username) REFERENCES users(username)
+        )''')
+        self.conn.commit()
+
+    def add_transaction(self, t_type, category, amount, description):
+        date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.cursor.execute("""
+            INSERT INTO transactions (username, type, category, amount, description, date)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (self.username, t_type, category, amount, description, date))
+        self.conn.commit()
+        print(f"{t_type} of {amount} in {category} added successfully.\n")
+        self.check_budget(category)
+
+    def update_transaction(self, transaction_id, amount, description):
+        self.cursor.execute("UPDATE transactions SET amount = ?, description = ? WHERE id = ? AND username = ?",
+                            (amount, description, transaction_id, self.username))
+        self.conn.commit()
+        print("Transaction updated successfully.\n")
+
+    def delete_transaction(self, transaction_id):
+        self.cursor.execute("DELETE FROM transactions WHERE id = ? AND username = ?", (transaction_id, self.username))
+        self.conn.commit()
+        print("Transaction deleted successfully.\n")
+
+    def set_budget(self, category, budget):
+        self.cursor.execute("""
+            INSERT INTO budgets (username, category, budget)
+            VALUES (?, ?, ?)
+            ON CONFLICT(username, category) DO UPDATE SET budget = ?
+        """, (self.username, category, budget, budget))
+        self.conn.commit()
+        print(f"Budget for {category} set to {budget}.\n")
+
+    def check_budget(self, category):
+        self.cursor.execute("SELECT budget FROM budgets WHERE username = ? AND category = ?", (self.username, category))
+        budget = self.cursor.fetchone()
+        if budget:
+            budget = budget[0]
+            self.cursor.execute("SELECT SUM(amount) FROM transactions WHERE username = ? AND category = ? AND type = ?",
+                                (self.username, category, "Expense"))
+            total_expense = self.cursor.fetchone()[0] or 0
+            if total_expense > budget:
+                print(f"Warning: You have exceeded the budget for {category}. Budget: {budget}, Spent: {total_expense}\n")
+
+    def view_transactions(self):
+        self.cursor.execute("SELECT * FROM transactions WHERE username = ?", (self.username,))
+        transactions = self.cursor.fetchall()
+        print("\n--- Transaction History ---")
+        for t in transactions:
+            print(f"{t[0]}. {t[6]} | {t[2]} | {t[3]} | Amount: {t[4]} | {t[5]}")
+        print("\n")
+
+    def generate_report(self, period):
+        if period == 'monthly':
+            date_filter = datetime.datetime.now().strftime("%Y-%m")
+        elif period == 'yearly':
+            date_filter = datetime.datetime.now().strftime("%Y")
+        else:
+            print("Invalid report type. Choose 'monthly' or 'yearly'.\n")
+            return
+
+        print(f"Fetching report for {self.username} in the {period} period...")
+        self.cursor.execute("""
+            SELECT category, SUM(amount) FROM transactions
+            WHERE username = ? AND date LIKE ? AND type = ?
+            GROUP BY category
+        """, (self.username, f"{date_filter}%", "Expense"))
+        report = self.cursor.fetchall()
+
+        if not report:
+            print(f"No transactions found for the {period} period.\n")
+            return
+
+        print(f"\n--- {period.capitalize()} Expense Report ---")
+        total_expense = 0
+        for category, amount in report:
+            print(f"Category: {category}, Amount: {amount}")
+            total_expense += amount
+        print(f"Total Expenses: {total_expense}\n")
+
+    def close_connection(self):
+        self.conn.close()
+
+if __name__ == "__main__":
+    user_manager = UserManager()
+    logged_in = False
+    while not logged_in:
+        print("1. Register\n2. Login\n")
+        choice = input("Enter your choice: ")
+        if choice == '1':
+            username = input("Enter a username: ")
+            password = input("Enter a password: ")
+            user_manager.register_user(username, password)
+        elif choice == '2':
+            username = input("Enter your username: ")
+            password = input("Enter your password: ")
+            if user_manager.authenticate_user(username, password):
+                logged_in = True
+                manager = PersonalFinanceManager(username)
+            else:
+                print("Please try again.\n")
+        else:
+            print("Invalid choice.\n")
+
+    while True:
+        print("\nPersonal Finance Management Application")
+        print("1. Add Transaction")
+        print("2. Update Transaction")
+        print("3. Delete Transaction")
+        print("4. View Transactions")
+        print("5. Set Budget")
+        print("6. Generate Report")
+        print("7. Exit")
+        choice = input("Enter your choice (1-7): ")
+
+        if choice == '1':
+            t_type = input("Enter type (Income/Expense): ")
+            category = input("Enter category (e.g., Food, Rent, Salary): ")
+            amount = float(input("Enter amount: "))
+            description = input("Enter description: ")
+            manager.add_transaction(t_type, category, amount, description)
+
+        elif choice == '2':
+            transaction_id = int(input("Enter transaction ID: "))
+            amount = float(input("Enter new amount: "))
+            description = input("Enter new description: ")
+            manager.update_transaction(transaction_id, amount, description)
+
+        elif choice == '3':
+            transaction_id = int(input("Enter transaction ID: "))
+            manager.delete_transaction(transaction_id)
+
+        elif choice == '4':
+            manager.view_transactions()
+
+        elif choice == '5':
+            category = input("Enter category: ")
+            budget = float(input("Enter budget amount: "))
+            manager.set_budget(category, budget)
+
+        elif choice == '6':
+            period = input("Enter report type (monthly/yearly): ")
+            manager.generate_report(period)
+
+        elif choice == '7':
+            print("Exiting the application. Goodbye!")
+            manager.close_connection()
+            break
+
+        else:
+            print("Invalid choice! Please enter a number between 1 and 7.")
